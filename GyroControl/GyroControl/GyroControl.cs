@@ -55,7 +55,49 @@ namespace IngameScript
                 anglePID.Reset();
             }
 
+            /// <summary>
+            /// Prioritizes up vector.
+            /// </summary>
+            Vector3D GetAngles2 (MatrixD current, Vector3D forward, Vector3D up)
+            {
+                Vector3D error = new Vector3D();
 
+                // yaw
+                if (forward != Vector3D.Zero)
+                {
+                    Vector3D temp = Vector3D.Normalize(VectorRejection(forward, current.Up));
+                    double dot = MathHelper.Clamp(Vector3D.Dot(current.Forward, temp), -1, 1);
+                    double yawAngle = Math.Acos(dot);
+                    double scaler = ScalerProjection(temp, current.Right);
+                    if (scaler > 0)
+                        yawAngle *= -1;
+                    error.Y = yawAngle;
+                }
+
+                // pitch and roll
+                if (up != Vector3D.Zero)
+                {
+                    Quaternion quat = Quaternion.CreateFromForwardUp(current.Up, current.Forward);
+                    Quaternion invQuat = Quaternion.Inverse(quat);
+                    Vector3D RCReferenceFrameVector = Vector3D.Transform(up, invQuat);
+                    Vector3D.GetAzimuthAndElevation(RCReferenceFrameVector, out error.Z, out error.X);
+                    error.Z *= -1;
+                    error.X *= -1;
+                }
+
+                if (Math.Abs(error.X) < 0.001)
+                    error.X = 0;
+                if (Math.Abs(error.Y) < 0.001)
+                    error.Y = 0;
+                if (Math.Abs(error.Z) < 0.001)
+                    error.Z = 0;
+
+                return error;
+            }
+
+            /// <summary>
+            /// Prioritizes forward vector.
+            /// </summary>
             Vector3D GetAngles (MatrixD current, Vector3D forward, Vector3D up)
             {
                 Vector3D error = new Vector3D();
@@ -64,18 +106,16 @@ namespace IngameScript
                 {
                     Quaternion quat = Quaternion.CreateFromForwardUp(current.Forward, current.Up);
                     Quaternion invQuat = Quaternion.Inverse(quat);
-                    Vector3D RCReferenceFrameVector = Vector3D.Transform(forward, invQuat); //Target Vector In Terms Of RC Block
-
-                    //Convert To Local Azimuth And Elevation
+                    Vector3D RCReferenceFrameVector = Vector3D.Transform(forward, invQuat);
                     Vector3D.GetAzimuthAndElevation(RCReferenceFrameVector, out error.Y, out error.X);
                 }
 
                 if (up != Vector3D.Zero)
                 {
-                    Vector3D temp = Vector3D.Normalize(VectorRejection(up, rc.WorldMatrix.Forward));
-                    double dot = MathHelper.Clamp(Vector3D.Dot(rc.WorldMatrix.Up, temp), -1, 1);
+                    Vector3D temp = Vector3D.Normalize(VectorRejection(up, current.Forward));
+                    double dot = MathHelper.Clamp(Vector3D.Dot(current.Up, temp), -1, 1);
                     double rollAngle = Math.Acos(dot);
-                    double scaler = ScalerProjection(temp, rc.WorldMatrix.Right);
+                    double scaler = ScalerProjection(temp, current.Right);
                     if (scaler > 0)
                         rollAngle *= -1;
                     error.Z = rollAngle;
@@ -90,7 +130,19 @@ namespace IngameScript
 
                 return error;
             }
-
+            /// <summary>
+            /// Prioritizes up vector.
+            /// </summary>
+            public void FaceVectors2 (Vector3D forward, Vector3D up)
+            {
+                // In (pitch, yaw, roll)
+                Vector3D error = -GetAngles2(rc.WorldMatrix, forward, up);
+                Vector3D angles = new Vector3D(anglePID.Control(error));
+                ApplyGyroOverride(rc.WorldMatrix, angles);
+            }
+            /// <summary>
+            /// Prioritizes forward vector.
+            /// </summary>
             public void FaceVectors (Vector3D forward, Vector3D up)
             {
                 // In (pitch, yaw, roll)
