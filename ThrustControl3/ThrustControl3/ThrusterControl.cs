@@ -21,6 +21,11 @@ namespace IngameScript
     {
         class ThrusterControl
         {
+            public enum Mode
+            {
+                Min, OnOff
+            }
+
             const double thrustP = 3;
             const double thrustI = 2;
             const double thrustD = 15;
@@ -28,9 +33,8 @@ namespace IngameScript
             const float minThrust = 1.0000001f;
             const double accuracy = 0.1;
 
-            readonly List<ThrusterGroup> thrust = new List<ThrusterGroup>();
+            readonly List<ThrusterGroup> thrust = new List<ThrusterGroup>(6);
             IMyShipController rc;
-
             VectorPID pid;
 
             public void Reset ()
@@ -39,7 +43,7 @@ namespace IngameScript
                     t.Reset();
             }
 
-            public ThrusterControl (IMyShipController rc, UpdateFrequency tickSpeed, List<IMyThrust> thrusters)
+            public ThrusterControl (IMyShipController rc, UpdateFrequency tickSpeed, List<IMyThrust> thrusters, Mode mode = Mode.Min)
             {
                 if (rc == null)
                     throw new Exception("Ship controller null.");
@@ -52,17 +56,18 @@ namespace IngameScript
                 double secondsPerTick = (1.0 / 60) * factor;
 
                 this.rc = rc;
-                Dictionary<Base6Directions.Direction, ThrusterGroup> temp = new Dictionary<Base6Directions.Direction, ThrusterGroup>();
+                Dictionary<Base6Directions.Direction, ThrusterGroup> temp = new Dictionary<Base6Directions.Direction, ThrusterGroup>(6);
                 foreach (IMyThrust t in thrusters)
                 {
                     t.ThrustOverride = 0;
+                    t.Enabled = true;
                     if (temp.ContainsKey(t.Orientation.Forward))
                     {
                         temp [t.Orientation.Forward].Add(t);
                     }
                     else
                     {
-                        ThrusterGroup newThrust = new ThrusterGroup();
+                        ThrusterGroup newThrust = new ThrusterGroup(mode);
                         newThrust.Add(t);
                         temp.Add(t.Orientation.Forward, newThrust);
                     }
@@ -105,7 +110,10 @@ namespace IngameScript
 
                 Vector3D force = accel * rc.CalculateShipMass().TotalMass;
                 foreach (ThrusterGroup t in thrust)
+                {
                     t.CancelForce(force);
+                    prg.Echo(t.Count.ToString());
+                }
             }
 
             public double StopDistance()
@@ -135,6 +143,14 @@ namespace IngameScript
             {
                 List<IMyThrust> thrust = new List<IMyThrust>();
                 double prevOutput = 0;
+                bool useMin;
+
+                public int Count => thrust.Count;
+
+                public ThrusterGroup(Mode mode)
+                {
+                    useMin = mode == Mode.Min;
+                }
 
                 public double AvailibleThrust(Vector3D direction)
                 {
@@ -165,12 +181,10 @@ namespace IngameScript
                         return;
 
                     outputThrust = Vector3D.Dot(force, forward);
-                    if (outputThrust > 0)
+                    if (outputThrust > minThrust)
                         ApplyForce(outputThrust);
-                    else if(outputThrust < 0)
-                        ApplyForce(0);
                     else
-                        Reset();
+                        ApplyZero();
 
                     prevOutput = outputThrust;
                 }
@@ -180,23 +194,70 @@ namespace IngameScript
                     foreach (IMyThrust t in thrust)
                     {
                         if (t.ThrustOverride != 0)
+                        {
                             t.ThrustOverride = 0;
+                            t.Enabled = true;
+                        }
+                    }
+                }
+
+                void ApplyZero()
+                {
+                    foreach(IMyThrust t in thrust)
+                    {
+                        if(useMin)
+                        {
+                            if (t.ThrustOverride != minThrust)
+                                t.ThrustOverride = minThrust;
+                        }
+                        else
+                        {
+                            if (t.Enabled)
+                                t.Enabled = false;
+                        }
                     }
                 }
 
                 void ApplyForce (double outputThrust)
                 {
+                    double output;
+                    double maxThrust;
+                    float percent;
                     foreach (IMyThrust t in thrust)
                     {
                         if (!t.IsWorking)
                             continue;
 
-                        double maxThrust = t.MaxEffectiveThrust;
-                        double output = MathHelper.Clamp(outputThrust, minThrust, maxThrust);
+                        maxThrust = t.MaxEffectiveThrust;
+                        if(useMin)
+                        {
+                            output = MathHelper.Clamp(outputThrust, minThrust, maxThrust);
+                            percent = (float)(output / maxThrust);
+                            if (t.ThrustOverridePercentage != output)
+                                t.ThrustOverridePercentage = percent;
+                            outputThrust -= output;
+                        }
+                        else
+                        {
+                            if (outputThrust < minThrust)
+                            {
+                                if(t.Enabled)
+                                    t.Enabled = false;
+                                if (t.ThrustOverride != 0)
+                                    t.ThrustOverride = 0;
+                            }
+                            else
+                            {
+                                output = Math.Min(outputThrust, maxThrust);
+                                if(!t.Enabled)
+                                    t.Enabled = true;
+                                percent = (float)(output / maxThrust);
+                                if (t.ThrustOverridePercentage != percent)
+                                    t.ThrustOverridePercentage = percent;
+                                outputThrust -= output;
+                            }
+                        }
 
-                        if (t.ThrustOverride != output)
-                            t.ThrustOverridePercentage = (float)(output / maxThrust);
-                        outputThrust -= output;
                     }
                 }
 

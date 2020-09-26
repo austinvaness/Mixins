@@ -1,18 +1,7 @@
-﻿using Sandbox.Game.EntityComponents;
-using Sandbox.ModAPI.Ingame;
-using Sandbox.ModAPI.Interfaces;
-using SpaceEngineers.Game.ModAPI.Ingame;
+﻿using Sandbox.ModAPI.Ingame;
 using System.Collections.Generic;
-using System.Collections;
-using System.Linq;
 using System.Text;
 using System;
-using VRage.Collections;
-using VRage.Game.Components;
-using VRage.Game.ModAPI.Ingame;
-using VRage.Game.ModAPI.Ingame.Utilities;
-using VRage.Game.ObjectBuilders.Definitions;
-using VRage.Game;
 using VRageMath;
 using VRage.Game.GUI.TextPanel;
 
@@ -20,22 +9,29 @@ namespace IngameScript
 {
     partial class Program
     {
-        public class Canvas
+        public class Canvas : IEquatable<Canvas>
         {
-            MySpriteDrawFrame? frame = null;
-            CanvasState lastFrame = new CanvasState();
-            List<MySprite> currentFrame = new List<MySprite>();
-
+            private MySpriteDrawFrame? frame = null;
+            public Vector2 cornerOffset;
             protected IMyTextSurface panel;
-            //public Vector2 viewportSize;
-            public Vector2 Size
+            protected CanvasState lastFrame = new CanvasState();
+            protected List<MySprite> currentFrame = new List<MySprite>();
+
+            public virtual Color BackgroundColor
             {
                 get
                 {
-                    return panel.SurfaceSize;
+                    return panel.ScriptBackgroundColor;
+                }
+                set
+                {
+                    panel.ScriptBackgroundColor = value;
                 }
             }
-            //Vector2 scale;
+
+            public virtual Vector2 Size { get; }
+
+            public virtual Vector2 Center { get; }
 
             public Canvas (IMyTextSurface panel)
             {
@@ -45,17 +41,36 @@ namespace IngameScript
                 this.panel = panel;
                 panel.ContentType = ContentType.SCRIPT;
                 panel.Script = "";
+                Vector2 diff = panel.SurfaceSize - panel.TextureSize;
+                cornerOffset = diff * 0.5f;
 
+                Size = panel.SurfaceSize;
+                Center = Size / 2;
+            }
+
+            protected Canvas()
+            {
+
+            }
+
+            public CanvasState GetWorkingState()
+            {
+                return new CanvasState(new List<MySprite>(currentFrame));
             }
 
             public CanvasState GetState ()
             {
                 return lastFrame;
             }
-            public void LoadState (CanvasState state)
+
+            public virtual void LoadState (CanvasState state)
             {
-                frame = panel.DrawFrame();
-                frame.Value.AddRange(state.State);
+                AddAllObjects(state.State, false);
+            }
+
+            public void DrawAllCustom(IEnumerable<MySprite> sprites)
+            {
+                AddAllObjects(sprites, true);
             }
 
             public void DrawCustom (MySprite s)
@@ -96,32 +111,86 @@ namespace IngameScript
                 DrawElipse(center, new Vector2(radius, radius), c, 0, hollow);
             }
 
-            public void DrawSquare (Vector2 position, Vector2 size, Color c, bool hollow = true)
+            public void DrawRect (Vector2 center, Vector2 size, Color c, bool hollow = true)
             {
                 MySprite s;
                 if (hollow)
-                    s = new MySprite(SpriteType.TEXTURE, "SquareHollow", position, size, c);
+                    s = new MySprite(SpriteType.TEXTURE, "SquareHollow", center, size, c);
                 else
-                    s = new MySprite(SpriteType.TEXTURE, "SquareSimple", position, size, c);
+                    s = new MySprite(SpriteType.TEXTURE, "SquareSimple", center, size, c);
                 AddObject(s);
             }
 
-            public void DrawString (Vector2 position, string value, string font, Color c, float scale = 1)
+            public void DrawRectByPoints (Vector2 topLeft, Vector2 bottomRight, Color c, bool hollow = true)
             {
-                MySprite s = MySprite.CreateText(value, font, c, scale, TextAlignment.LEFT);
+                Vector2 size = bottomRight - topLeft;
+                Vector2 center = topLeft + (size / 2);
+                DrawRect(center, size, c, hollow);
+            }
+
+            public void DrawRectByTopLeft (Vector2 topLeft, Vector2 size, Color c, bool hollow = true)
+            {
+                Vector2 center = topLeft + (size / 2);
+                DrawRect(center, size, c, hollow);
+            }
+
+            public virtual Vector2 GetStringSize (string s, string font, float scale)
+            {
+                return panel.MeasureStringInPixels(new StringBuilder(s), font, scale);
+            }
+
+            public void DrawString (Vector2 position, string value, string font, Color c, TextAlignment alignment = TextAlignment.LEFT, float scale = 1)
+            {
+                MySprite s = MySprite.CreateText(value, font, c, scale, alignment);
                 s.Position = position;
                 AddObject(s);
             }
 
-            private void AddObject (MySprite s)
+            protected virtual void ApplyOffsets(ref MySprite s)
+            {
+                if (s.Position.HasValue)
+                    s.Position = s.Position.Value - cornerOffset;
+            }
+
+            protected void AddAllObjects(IEnumerable<MySprite> sprites, bool offsets)
+            {
+                if (!frame.HasValue)
+                {
+                    frame = panel.DrawFrame();
+                    FrameCreated(frame.Value);
+                }
+                else if (currentFrame.Count == 0)
+                {
+                    FrameCreated(frame.Value);
+                }
+
+                foreach (MySprite sprite in sprites)
+                {
+                    MySprite s = sprite;
+                    if(offsets)
+                        ApplyOffsets(ref s);
+                    frame.Value.Add(s);
+                    currentFrame.Add(s);
+                }
+            }
+
+            protected void AddObject (MySprite s)
             {
                 if (frame == null)
+                {
                     frame = panel.DrawFrame();
+                    FrameCreated(frame.Value);
+                }
+                else if(currentFrame.Count == 0)
+                {
+                    FrameCreated(frame.Value);
+                }
+                ApplyOffsets(ref s);
                 frame.Value.Add(s);
                 currentFrame.Add(s);
             }
 
-            public void EndDraw ()
+            public virtual void EndDraw ()
             {
                 if (frame == null)
                 {
@@ -134,12 +203,43 @@ namespace IngameScript
                 frame.Value.Dispose();
             }
 
+            protected virtual void FrameCreated (MySpriteDrawFrame frame)
+            { }
+
             public void Clear ()
             {
-                frame = null;
-                panel.DrawFrame();
+                if (currentFrame.Count > 0)
+                    frame = null;
+                var temp = panel.DrawFrame();
+                FrameCreated(temp);
+                temp.Dispose();
             }
 
+            public override bool Equals(object obj)
+            {
+                return Equals(obj as Canvas);
+            }
+
+            public bool Equals(Canvas other)
+            {
+                return other != null &&
+                       EqualityComparer<IMyTextSurface>.Default.Equals(panel, other.panel);
+            }
+
+            public override int GetHashCode()
+            {
+                return 267788301 + EqualityComparer<IMyTextSurface>.Default.GetHashCode(panel);
+            }
+
+            public static bool operator ==(Canvas left, Canvas right)
+            {
+                return EqualityComparer<Canvas>.Default.Equals(left, right);
+            }
+
+            public static bool operator !=(Canvas left, Canvas right)
+            {
+                return !(left == right);
+            }
         }
 
         public struct CanvasShape
